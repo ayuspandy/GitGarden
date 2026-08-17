@@ -40,7 +40,8 @@ class GitBuilder:
     def __init__(self, directory, files="."):
         self.comment_generator = CommentBuilder()
         self.file_generator = FileBuilder()
-        self.directory = directory
+        self.directory = Path(directory)
+        self.git_dir = self.directory.parent
         self.filepath = Path(__file__).parents[0]
         self.cfgs = self.read_configs()
         self.branch = self.cfgs["branch"]
@@ -67,56 +68,89 @@ class GitBuilder:
 
         return self.random_commits()
 
+    def _run_git_command(self, cmd_args, env=None, error_msg="Error executing git command"):
+        import subprocess
+        import sys
+        
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
+            
+        res = subprocess.run(
+            cmd_args,
+            cwd=self.git_dir,
+            env=run_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if res.returncode != 0:
+            print(f"\n{BOLD}{RED}[ERROR] {error_msg}{RESET}")
+            if res.stderr.strip():
+                print(f"{YELLOW}Git error output:{RESET}\n{res.stderr.strip()}")
+            if res.stdout.strip():
+                print(f"{YELLOW}Git output:{RESET}\n{res.stdout.strip()}")
+            sys.exit(1)
+        return res
+
     def init_repository(self):
         """Initializes a new git repository in the workspace."""
-        command = "git init >/dev/null 2>&1"
-        status = os.system(command)
-        if status != 0:
-            print(f"\n{BOLD}{RED}[ERROR] Failed to initialize git repository. Please ensure Git is installed.{RESET}")
-            import sys
-            sys.exit(1)
+        os.makedirs(self.directory, exist_ok=True)
+        git_sub_dir = self.directory / ".git"
+        if git_sub_dir.exists():
+            import shutil
+            shutil.rmtree(git_sub_dir)
+        self._run_git_command(["git", "init"], error_msg="Failed to initialize git repository. Please ensure Git is installed.")
+        self._run_git_command(["git", "checkout", "-B", self.branch], error_msg=f"Failed to set local branch to '{self.branch}'.")
 
     def set_remote_repository(self, repo):
         """Sets the git remote origin URL for pushing commits."""
-        command = f"git remote add origin {repo} >/dev/null 2>&1 || git remote set-url origin {repo} >/dev/null 2>&1"
-        status = os.system(command)
-        if status != 0:
-            print(f"\n{BOLD}{RED}[ERROR] Failed to set remote repository. Please check your repository URL: {repo}{RESET}")
-            import sys
-            sys.exit(1)
+        import subprocess
+        os.makedirs(self.directory, exist_ok=True)
+        res = subprocess.run(
+            ["git", "remote", "add", "origin", repo],
+            cwd=self.git_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if res.returncode != 0:
+            res2 = subprocess.run(
+                ["git", "remote", "set-url", "origin", repo],
+                cwd=self.git_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            if res2.returncode != 0:
+                print(f"\n{BOLD}{RED}[ERROR] Failed to set remote repository. Please check your repository URL: {repo}{RESET}")
+                if res2.stderr.strip():
+                    print(f"{YELLOW}Git error output:{RESET}\n{res2.stderr.strip()}")
+                import sys
+                sys.exit(1)
 
     def add(self):
         """Stages all pending file modifications and untracked files to git."""
-        command = "git add . >/dev/null 2>&1"
-        status = os.system(command)
-        if status != 0:
-            print(f"\n{BOLD}{RED}[ERROR] Failed to stage files (git add).{RESET}")
-            import sys
-            sys.exit(1)
+        self._run_git_command(["git", "add", "."], error_msg="Failed to stage files (git add).")
 
     def commit(self, message: str, date: str):
         """Commits changes with a specified commit message and custom author/committer date stamps."""
-        quoted_date = shlex.quote(date)
-        quoted_message = shlex.quote(message)
-        command = (
-            f"GIT_AUTHOR_DATE={quoted_date} "
-            f"GIT_COMMITTER_DATE={quoted_date} "
-            f"git commit --date={quoted_date} -m {quoted_message} >/dev/null 2>&1"
+        env = {
+            "GIT_AUTHOR_DATE": date,
+            "GIT_COMMITTER_DATE": date
+        }
+        self._run_git_command(
+            ["git", "commit", f"--date={date}", "-m", message],
+            env=env,
+            error_msg="Failed to commit changes. Please check git configurations."
         )
-        status = os.system(command)
-        if status != 0:
-            print(f"\n{BOLD}{RED}[ERROR] Failed to commit changes. Please check git configurations.{RESET}")
-            import sys
-            sys.exit(1)
 
     def push(self):
         """Pushes the commits to the remote branch on the git origin."""
-        command = f"git push origin {self.branch}"
-        status = os.system(f"{command} >/dev/null 2>&1")
-        if status != 0:
-            print(f"\n{BOLD}{RED}[ERROR] Failed to push to branch '{self.branch}'. Please check remote repository settings and authentication.{RESET}")
-            import sys
-            sys.exit(1)
+        self._run_git_command(
+            ["git", "push", "origin", self.branch],
+            error_msg=f"Failed to push to branch '{self.branch}'. Please check remote repository settings and authentication."
+        )
 
     def execute(self, date: str, push=True):
         """Generates a dummy file, stages it, commits it under a specific date, and optionally pushes."""
